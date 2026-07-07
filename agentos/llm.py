@@ -407,29 +407,39 @@ class OllamaProvider(LLMProvider):
 class AnthropicProvider(LLMProvider):
     """Anthropic Messages API provider.
 
-    The ``anthropic`` SDK is imported lazily inside the methods. Configure via:
+    Uses the official ``anthropic`` SDK, imported lazily inside the methods.
+    Configure via:
 
     * ``ANTHROPIC_API_KEY``       (required at call time)
-    * ``AGENTOS_ANTHROPIC_MODEL`` (default ``claude-fable-5``)
+    * ``AGENTOS_ANTHROPIC_MODEL`` (default ``claude-opus-4-8``)
+    * ``AGENTOS_ANTHROPIC_MAX_TOKENS`` (default ``4096``)
 
     Structured output is implemented by forcing a single-tool call whose input
     schema is ``response_schema``; the tool input is returned as JSON ``text``.
+    A ``refusal`` stop reason (safety decline, HTTP 200 with empty content) is
+    surfaced as ``confidence=0.0`` rather than an empty result.
     """
 
     _STRUCT_TOOL = "structured_output"
 
     def __init__(self, model: str | None = None, api_key: str | None = None) -> None:
+        # Default to Opus 4.8 (recommended general-purpose model). Override via
+        # AGENTOS_ANTHROPIC_MODEL — "claude-fable-5" for the most capable model,
+        # "claude-haiku-4-5" for cheap/fast subagents.
         self.model = model or os.environ.get(
-            "AGENTOS_ANTHROPIC_MODEL", "claude-fable-5"
+            "AGENTOS_ANTHROPIC_MODEL", "claude-opus-4-8"
         )
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self.max_tokens = int(os.environ.get("AGENTOS_ANTHROPIC_MAX_TOKENS", "1024"))
+        # 1024 truncates real agent turns; 4096 finishes a thought while staying
+        # under the non-streaming SDK timeout.
+        self.max_tokens = int(os.environ.get("AGENTOS_ANTHROPIC_MAX_TOKENS", "4096"))
 
     def _client(self):
-        import anthropic  # lazy
-
+        # Check config before importing the SDK so a missing key is a clean
+        # error even when the [llm] extra isn't installed.
         if not self.api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
+        import anthropic  # lazy; needs the [llm] extra
         return anthropic.Anthropic(api_key=self.api_key)
 
     @staticmethod
@@ -473,6 +483,16 @@ class AnthropicProvider(LLMProvider):
             kwargs["tools"] = tools
 
         resp = client.messages.create(**kwargs)
+
+        # Safety classifiers can decline with HTTP 200 + stop_reason "refusal"
+        # (empty content, not billed pre-output). Surface it instead of
+        # returning a silently-empty result. Always check before reading content.
+        if getattr(resp, "stop_reason", None) == "refusal":
+            return LLMResult(
+                text="", tool_calls=[], input_tokens=0, output_tokens=0,
+                model=self.model, cost_usd=0.0, confidence=0.0,
+                raw={"stop_reason": "refusal"},
+            )
 
         text_parts: list[str] = []
         tool_calls: list[dict] = []
