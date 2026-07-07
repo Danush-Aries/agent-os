@@ -226,12 +226,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _apply_config_env()  # persisted config feeds env (real env still wins)
     args = build_parser().parse_args(argv)
     if getattr(args, "func", None) is None:
         return cmd_up(args)  # bare `agent-os` boots the dashboard
     return args.func(args)
 
 
+def console_main() -> int:
+    """Real CLI entry point. Loads persisted config into the env first.
+
+    Kept separate from ``main`` so the test suite (which calls ``main`` directly)
+    is never affected by a user's ~/.agentos/config.json.
+    """
+    _apply_config_env()  # persisted config feeds env (real env still wins)
+    return main()
+
+
 if __name__ == "__main__":  # pragma: no cover
-    sys.exit(main())
+    sys.exit(console_main())

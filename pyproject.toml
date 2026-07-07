@@ -10,8 +10,8 @@ keywords = ["agents", "orchestration", "scheduler", "runtime", "ai"]
 dependencies = []
 
 [project.scripts]
-agent-os = "agentos.cli:main"
-agentos = "agentos.cli:main"
+agent-os = "agentos.cli:console_main"
+agentos = "agentos.cli:console_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
