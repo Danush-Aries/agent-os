@@ -129,6 +129,36 @@ uv tool install "agent-os[vector]"  # remote embeddings for semantic memory (htt
 
 For development, `uv run --extra dev pytest -q` pulls in the test dependencies.
 
+### Connect the real Claude API
+
+The LLM abstraction defaults to an offline `MockLLM`. To run agents against
+Claude, install the `[llm]` extra, set your key, and point the provider at
+Anthropic — no other code changes:
+
+```bash
+uv tool install "agent-os[llm]"
+export ANTHROPIC_API_KEY=sk-ant-...
+export AGENTOS_LLM=anthropic                 # get_provider() now returns Claude
+export AGENTOS_ANTHROPIC_MODEL=claude-opus-4-8   # optional; default
+uv run --extra llm python examples/06_claude_agent.py
+```
+
+Or wire it explicitly in code:
+
+```python
+from agentos import Task, default_kernel
+from agentos.llm import AnthropicProvider
+
+k = default_kernel(llm=AnthropicProvider())      # uses ANTHROPIC_API_KEY
+k.submit(Task(kind="llm", payload={"prompt": "Summarize agent-os in one line."}))
+k.run()
+```
+
+The provider uses the official `anthropic` SDK, handles the `refusal` stop
+reason, splits `system` messages, supports tool-calling + schema-forced
+structured output, and reports token usage and USD cost per call. Switch to a
+local model with `AGENTOS_LLM=ollama` instead.
+
 ## Examples
 
 Runnable, pure-stdlib scripts in [`examples/`](examples/):
@@ -140,6 +170,7 @@ Runnable, pure-stdlib scripts in [`examples/`](examples/):
 | `03_retries_and_timeout.py` | a flaky task that recovers, and one that times out |
 | `04_tools_and_guardrails.py` | a schema-validated tool + secret block / PII redact |
 | `05_custom_agent.py` | a custom agent, shared memory, and a spawned follow-up |
+| `06_claude_agent.py` | an LLM agent backed by the **real Claude API** (falls back to MockLLM without a key) |
 
 ```bash
 uv run python examples/01_hello_pipeline.py
