@@ -120,3 +120,43 @@ def test_missing_key_raises():
     p.api_key = None
     with pytest.raises(RuntimeError):
         p._client()
+
+
+# --- ClaudeCliProvider (Max-plan via claude CLI) — offline via injected runner ---
+
+from agentos.llm import ClaudeCliProvider
+
+
+def test_claude_cli_parses_result_usage_cost():
+    import json as _json
+
+    def fake_runner(cmd, stdin):
+        assert cmd[0] == "claude" and "-p" in cmd and "--output-format" in cmd
+        payload = {"result": "hello from max", "stop_reason": "end_turn",
+                   "is_error": False, "total_cost_usd": 0.012,
+                   "usage": {"input_tokens": 30, "output_tokens": 5,
+                             "cache_read_input_tokens": 10}}
+        return _json.dumps(payload), 0
+
+    p = ClaudeCliProvider(runner=fake_runner)
+    r = p.complete([{"role": "system", "content": "be brief"},
+                    {"role": "user", "content": "hi"}])
+    assert r.text == "hello from max"
+    assert r.input_tokens == 30 and r.output_tokens == 5 and r.cache_tokens == 10
+    assert r.cost_usd == 0.012
+    assert r.confidence == 1.0
+
+
+def test_claude_cli_bad_output_is_low_confidence():
+    p = ClaudeCliProvider(runner=lambda cmd, stdin: ("not json", 1))
+    r = p.complete([{"role": "user", "content": "hi"}])
+    assert r.confidence == 0.0 and r.text == ""
+
+
+def test_claude_cli_error_flag_lowers_confidence():
+    import json as _json
+    payload = {"result": "", "is_error": True, "api_error_status": 529,
+               "usage": {}, "total_cost_usd": 0.0}
+    p = ClaudeCliProvider(runner=lambda cmd, stdin: (_json.dumps(payload), 0))
+    r = p.complete([{"role": "user", "content": "hi"}])
+    assert r.confidence == 0.0
