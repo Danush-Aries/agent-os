@@ -11,6 +11,46 @@ if TYPE_CHECKING:  # avoid a runtime import cycle with kernel
     from .kernel import Kernel
 
 
+class _TracingLLM:
+    """Transparent LLM wrapper that records each call for observability.
+
+    Emits an ``llm.call`` event carrying OpenTelemetry GenAI semantic-convention
+    attributes (``gen_ai.system``, ``gen_ai.request.model``,
+    ``gen_ai.usage.input_tokens`` / ``output_tokens``) and rolls token + cost
+    totals into the tracer's metrics — so ``kernel.metrics()`` and
+    ``kernel.trace(id)`` reflect real model usage without any agent-side code.
+    """
+
+    def __init__(self, provider, tracer, task_id: int) -> None:
+        self._p = provider
+        self._t = tracer
+        self._tid = task_id
+
+    def complete(self, messages, tools=None, response_schema=None):
+        r = self._p.complete(messages, tools=tools, response_schema=response_schema)
+        in_tok = getattr(r, "input_tokens", 0) or 0
+        out_tok = getattr(r, "output_tokens", 0) or 0
+        cost = getattr(r, "cost_usd", 0.0) or 0.0
+        self._t.emit("llm.call", self._tid, **{
+            "gen_ai.system": type(self._p).__name__,
+            "gen_ai.request.model": getattr(r, "model", ""),
+            "gen_ai.usage.input_tokens": in_tok,
+            "gen_ai.usage.output_tokens": out_tok,
+            "gen_ai.usage.cost_usd": round(cost, 6),
+        })
+        self._t.incr("llm.calls")
+        self._t.incr("llm.input_tokens", in_tok)
+        self._t.incr("llm.output_tokens", out_tok)
+        self._t.incr("llm.cost_usd", cost)
+        return r
+
+    def stream(self, messages, tools=None):
+        return self._p.stream(messages, tools=tools)
+
+    def __getattr__(self, name):  # passthrough for .model, etc.
+        return getattr(self._p, name)
+
+
 class Context:
     """What an agent is given when it runs a task.
 
@@ -24,8 +64,12 @@ class Context:
         self.task = task
         self.memory = kernel.memory          # shared blackboard
         self.tools = kernel.tools            # ToolRegistry
-        self.llm = kernel.llm                # LLM provider or None
         self.tracer = kernel.tracer
+        # Wrap the provider so every call is traced + metered (None stays None).
+        self.llm = (
+            _TracingLLM(kernel.llm, kernel.tracer, task.id)
+            if kernel.llm is not None else None
+        )
 
     # --- spawning / delegation ----------------------------------------------
 

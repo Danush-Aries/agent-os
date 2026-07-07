@@ -12,6 +12,8 @@ the concurrent kernel). Dependency cycles are rejected at submit time.
 
 from __future__ import annotations
 
+import threading
+
 from .task import Task, TaskStatus
 
 
@@ -20,21 +22,31 @@ class DependencyCycleError(ValueError):
 
 
 class Scheduler:
+    """Thread-safe task table.
+
+    Worker threads submit new tasks (via ``ctx.spawn``) while the kernel's main
+    loop scans for runnable work, so every read of the task map snapshots it
+    under a lock — otherwise the main loop can hit
+    ``RuntimeError: dictionary changed size during iteration``.
+    """
+
     def __init__(self) -> None:
         self._tasks: dict[int, Task] = {}
         self._seq: dict[int, int] = {}   # task id -> submission order
         self._next_seq = 0
+        self._lock = threading.RLock()
 
     def add(self, task: Task) -> int:
-        self._tasks[task.id] = task
-        self._seq[task.id] = self._next_seq
-        self._next_seq += 1
-        if self._creates_cycle(task.id):
-            # roll back the insertion before raising
-            del self._tasks[task.id]
-            del self._seq[task.id]
-            raise DependencyCycleError(f"task {task.id} introduces a dependency cycle")
-        return task.id
+        with self._lock:
+            self._tasks[task.id] = task
+            self._seq[task.id] = self._next_seq
+            self._next_seq += 1
+            if self._creates_cycle(task.id):
+                # roll back the insertion before raising
+                del self._tasks[task.id]
+                del self._seq[task.id]
+                raise DependencyCycleError(f"task {task.id} introduces a dependency cycle")
+            return task.id
 
     def _creates_cycle(self, start: int) -> bool:
         """DFS over dependency edges; a back-edge to a task on the stack = cycle."""
@@ -56,10 +68,12 @@ class Scheduler:
         return visit(start)
 
     def get(self, task_id: int) -> Task | None:
-        return self._tasks.get(task_id)
+        with self._lock:
+            return self._tasks.get(task_id)
 
     def all(self) -> list[Task]:
-        return [self._tasks[i] for i in sorted(self._tasks)]
+        with self._lock:
+            return [self._tasks[i] for i in sorted(self._tasks)]
 
     def _deps_state(self, task: Task) -> str:
         blocked = False
@@ -77,8 +91,10 @@ class Scheduler:
 
     def ready_batch(self) -> list[Task]:
         """All currently-runnable tasks, best-first. Promotes blocked ones."""
+        with self._lock:
+            tasks = list(self._tasks.values())  # snapshot before scanning
         ready: list[Task] = []
-        for task in self._tasks.values():
+        for task in tasks:
             if task.status != TaskStatus.PENDING:
                 continue
             state = self._deps_state(task)
@@ -94,4 +110,6 @@ class Scheduler:
         return batch[0] if batch else None
 
     def has_pending(self) -> bool:
-        return any(t.status == TaskStatus.PENDING for t in self._tasks.values())
+        with self._lock:
+            tasks = list(self._tasks.values())
+        return any(t.status == TaskStatus.PENDING for t in tasks)
