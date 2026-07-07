@@ -26,15 +26,42 @@ opt-in extra, so `pip install agent-os` stays dependency-free.
 
 ## Quickstart
 
+Install once, then a single command boots everything and opens the dashboard:
+
 ```bash
-uv run agentos demo        # run the built-in fan-out/reduce pipeline
-uv run agentos agents      # list built-in agents
-uv run agentos ps          # run the demo, print the process table
-uv run agentos metrics     # run the demo, print kernel metrics
-uv run agentos trace 1     # run the demo, pretty-print task 1's trace
-uv run agentos run tasks.json
-uv run agentos serve       # start the REST API (needs the [api] extra)
+uv tool install "agent-os[api]"    # or: pipx install "agent-os[api]"
+agent-os                            # boot all agents + tools + LLM, open the dashboard
 ```
+
+`agent-os` with no arguments starts the REST server on http://localhost:8080,
+loads every built-in agent and the real-world tool integrations, wires your LLM
+provider, and opens the live dashboard. Other subcommands:
+
+```bash
+agent-os up            # same as bare `agent-os`
+agent-os demo          # run the built-in fan-out/reduce pipeline
+agent-os agents        # list built-in agents
+agent-os ps            # run the demo, print the process table
+agent-os metrics       # run the demo, print kernel metrics
+agent-os trace 1       # pretty-print task 1's trace
+agent-os run tasks.json
+agent-os serve         # start the REST API without opening a browser
+agent-os config --set AGENTOS_LLM=claude-cli   # persist defaults (see below)
+```
+
+### Use your Claude Max/Pro subscription (no API key)
+
+Your Max subscription is used by the `claude` CLI, not the paid API. Agent OS
+detects it automatically — if the `claude` binary is on your PATH, `agent-os`
+routes LLM agents through it via `ClaudeCliProvider` (billed to your
+subscription). To pin it explicitly:
+
+```bash
+agent-os config --set AGENTOS_LLM=claude-cli   # persisted to ~/.agentos/config.json
+# or per-shell: export AGENTOS_LLM=claude-cli
+```
+
+Provider precedence for the app: `$AGENTOS_LLM` → Claude CLI (Max) → `ANTHROPIC_API_KEY` → offline MockLLM.
 
 As a library:
 

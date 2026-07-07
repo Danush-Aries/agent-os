@@ -1,12 +1,15 @@
 """Command line for Agent OS.
 
-    agentos demo                 # run the built-in pipeline demo
-    agentos run tasks.json       # boot built-in agents, run tasks from a file
-    agentos agents               # list registered built-in agents
-    agentos ps                   # run the demo, print the process table
-    agentos metrics              # run the demo, print kernel metrics
-    agentos trace <task_id>      # run the demo, pretty-print a task's trace
-    agentos serve                # start the REST API (needs the [api] extra)
+    agent-os                     # boot everything + open the live dashboard
+    agent-os up                  # same as bare invocation
+    agent-os demo                # run the built-in pipeline demo
+    agent-os run tasks.json      # boot built-in agents, run tasks from a file
+    agent-os agents              # list registered built-in agents
+    agent-os ps                  # run the demo, print the process table
+    agent-os metrics             # run the demo, print kernel metrics
+    agent-os trace <task_id>     # run the demo, pretty-print a task's trace
+    agent-os serve               # start the REST API without opening a browser
+    agent-os config              # show / set config (e.g. LLM provider)
 
 A tasks file is JSON: a list of {"kind","payload","priority","deps"} objects,
 where deps reference other tasks by their 0-based index in the list.
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -23,6 +27,22 @@ from . import __version__
 from .agents import BUILTIN_AGENTS
 from .kernel import Kernel
 from .task import Task, TaskStatus
+
+CONFIG_PATH = Path(os.environ.get("AGENTOS_CONFIG",
+                                  str(Path.home() / ".agentos" / "config.json")))
+
+
+def _load_config() -> dict:
+    try:
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _apply_config_env() -> None:
+    """Load persisted config into the environment (env still wins if set)."""
+    for key, val in _load_config().items():
+        os.environ.setdefault(key, str(val))
 
 
 def _boot() -> Kernel:
@@ -133,20 +153,60 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_serve(_: argparse.Namespace) -> int:
+def _serve(open_browser: bool) -> int:
     try:
         from .server import run
     except ImportError:
-        print("install the [api] extra: uv tool install agent-os[api]", file=sys.stderr)
+        print("The dashboard needs the [api] extra. Install with:\n"
+              "    uv tool install \"agent-os[api]\"", file=sys.stderr)
         return 1
-    run()
+    from .llm import auto_provider
+    provider = type(auto_provider()).__name__
+    print(f"Agent OS — booting all agents + tools + LLM ({provider})")
+    run(open_browser=open_browser)
+    return 0
+
+
+def cmd_up(_: argparse.Namespace) -> int:
+    """Boot everything and open the dashboard — the default action."""
+    return _serve(open_browser=True)
+
+
+def cmd_serve(_: argparse.Namespace) -> int:
+    return _serve(open_browser=False)
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    cfg = _load_config()
+    if args.set:
+        for pair in args.set:
+            if "=" not in pair:
+                print(f"bad --set '{pair}', expected KEY=VALUE", file=sys.stderr)
+                return 2
+            key, _, val = pair.partition("=")
+            cfg[key.strip()] = val.strip()
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        print(f"wrote {CONFIG_PATH}")
+    if not cfg:
+        print(f"no config yet ({CONFIG_PATH}).")
+        print("example: agent-os config --set AGENTOS_LLM=claude-cli")
+    else:
+        print(f"# {CONFIG_PATH}")
+        for k, v in cfg.items():
+            print(f"{k}={v}")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="agentos", description="A tiny OS for cooperating agents.")
-    p.add_argument("--version", action="version", version=f"agentos {__version__}")
-    sub = p.add_subparsers(dest="command", required=True)
+    p = argparse.ArgumentParser(
+        prog="agent-os",
+        description="An operating system for cooperating agents. "
+                    "Run with no arguments to boot everything and open the dashboard.",
+    )
+    p.add_argument("--version", action="version", version=f"agent-os {__version__}")
+    sub = p.add_subparsers(dest="command")  # optional: bare invocation => up
+    sub.add_parser("up", help="boot everything and open the dashboard (default)").set_defaults(func=cmd_up)
     sub.add_parser("demo", help="run the built-in pipeline demo").set_defaults(func=cmd_demo)
     runp = sub.add_parser("run", help="run tasks from a JSON file")
     runp.add_argument("tasks")
@@ -157,12 +217,19 @@ def build_parser() -> argparse.ArgumentParser:
     tracep = sub.add_parser("trace", help="run the demo and print a task's trace")
     tracep.add_argument("task_id", type=int, help="id of the task to trace")
     tracep.set_defaults(func=cmd_trace)
-    sub.add_parser("serve", help="start the REST API (needs the [api] extra)").set_defaults(func=cmd_serve)
+    sub.add_parser("serve", help="start the REST API without opening a browser").set_defaults(func=cmd_serve)
+    cfgp = sub.add_parser("config", help="show or set persisted config")
+    cfgp.add_argument("--set", action="append", metavar="KEY=VALUE",
+                      help="persist a config value (repeatable)")
+    cfgp.set_defaults(func=cmd_config)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
+    _apply_config_env()  # persisted config feeds env (real env still wins)
     args = build_parser().parse_args(argv)
+    if getattr(args, "func", None) is None:
+        return cmd_up(args)  # bare `agent-os` boots the dashboard
     return args.func(args)
 
 

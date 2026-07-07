@@ -621,11 +621,107 @@ class FallbackLLM(LLMProvider):
 # --------------------------------------------------------------------------- #
 # Factory
 # --------------------------------------------------------------------------- #
+class ClaudeCliProvider(LLMProvider):
+    """Use a Claude **Max/Pro subscription** via the ``claude`` CLI (Claude Code).
+
+    Unlike :class:`AnthropicProvider` (which bills a separate ``ANTHROPIC_API_KEY``),
+    this shells out to the logged-in ``claude`` binary in headless mode
+    (``claude -p ... --output-format json``), so it runs on your Claude
+    subscription with no API key. ``total_cost_usd`` from the CLI is the
+    equivalent API cost (covered by the subscription).
+
+    Tool-calling and forced structured output aren't exposed through the CLI, so
+    ``complete`` returns text only; ``response_schema`` is honored best-effort by
+    instructing the model to emit matching JSON. The subprocess ``runner`` is
+    injectable for offline tests.
+    """
+
+    def __init__(self, binary: str | None = None, model: str | None = None,
+                 runner=None) -> None:
+        self.binary = binary or os.environ.get("AGENTOS_CLAUDE_BIN", "claude")
+        self.model = model or os.environ.get("AGENTOS_CLAUDE_MODEL")  # None => CLI default
+        self._runner = runner  # (cmd: list[str], stdin: str) -> (stdout, returncode)
+
+    @staticmethod
+    def _flatten(messages: list[dict]) -> tuple[str, str]:
+        system_parts, user_parts = [], []
+        for m in messages:
+            role, content = m.get("role"), m.get("content", "")
+            if not isinstance(content, str):
+                content = json.dumps(content)
+            (system_parts if role == "system" else user_parts).append(content)
+        return "\n\n".join(system_parts), "\n\n".join(user_parts)
+
+    def _run(self, cmd: list[str], stdin: str) -> tuple[str, int]:
+        if self._runner is not None:
+            return self._runner(cmd, stdin)
+        import subprocess  # lazy; stdlib
+        proc = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
+        return proc.stdout, proc.returncode
+
+    def complete(self, messages, tools=None, response_schema=None) -> LLMResult:
+        system, user = self._flatten(messages)
+        if response_schema is not None:
+            user += ("\n\nRespond with ONLY a JSON object matching this schema, "
+                     f"no prose:\n{json.dumps(response_schema)}")
+        cmd = [self.binary, "-p", "--output-format", "json"]
+        if self.model:
+            cmd += ["--model", self.model]
+        if system:
+            cmd += ["--append-system-prompt", system]
+        stdout, rc = self._run(cmd, user)
+        try:
+            data = json.loads(stdout)
+        except (json.JSONDecodeError, TypeError):
+            return LLMResult(text="", model="claude-cli", confidence=0.0,
+                             raw={"returncode": rc, "stdout": (stdout or "")[:500]})
+        usage = data.get("usage") or {}
+        in_tok = int(usage.get("input_tokens", 0) or 0)
+        out_tok = int(usage.get("output_tokens", 0) or 0)
+        cache_tok = int(usage.get("cache_read_input_tokens", 0) or 0)
+        errored = bool(data.get("is_error")) or data.get("api_error_status")
+        return LLMResult(
+            text=data.get("result", "") or "",
+            tool_calls=[],
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cache_tokens=cache_tok,
+            model=data.get("model") or self.model or "claude-cli",
+            cost_usd=float(data.get("total_cost_usd", 0.0) or 0.0),
+            confidence=0.0 if errored else 1.0,
+            raw=data,
+        )
+
+    def stream(self, messages, tools=None) -> Iterator[str]:
+        # The CLI can stream, but for simplicity yield the completed text once.
+        yield self.complete(messages, tools=tools).text
+
+
+def auto_provider() -> LLMProvider:
+    """Pick the best available provider for an *application* (not tests).
+
+    Order: ``$AGENTOS_LLM`` if set; else the Claude CLI (your Max/Pro
+    subscription) if the ``claude`` binary is on PATH; else ``ANTHROPIC_API_KEY``
+    via the API; else the offline MockLLM. Library/test default stays MockLLM —
+    only apps that opt in (the ``agent-os`` CLI, the server) call this.
+    """
+    import shutil
+
+    if os.environ.get("AGENTOS_LLM"):
+        return get_provider()
+    if shutil.which(os.environ.get("AGENTOS_CLAUDE_BIN", "claude")):
+        return ClaudeCliProvider()
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return AnthropicProvider()
+    return MockLLM()
+
+
 def get_provider(name: str | None = None) -> LLMProvider:
     """Return a provider instance.
 
     Selection order: explicit ``name`` argument, else ``$AGENTOS_LLM``, else
-    ``"mock"``. Recognised: ``mock`` | ``ollama`` | ``anthropic``.
+    ``"mock"``. Recognised: ``mock`` | ``ollama`` | ``anthropic`` |
+    ``claude-cli`` (aliases: ``claude-code``, ``max``, ``claude``).
     """
     choice = (name or os.environ.get("AGENTOS_LLM", "mock")).strip().lower()
     if choice == "mock":
@@ -634,7 +730,11 @@ def get_provider(name: str | None = None) -> LLMProvider:
         return OllamaProvider()
     if choice == "anthropic":
         return AnthropicProvider()
-    raise ValueError(f"unknown provider {choice!r} (use mock|ollama|anthropic)")
+    if choice in ("claude-cli", "claude-code", "max", "claude"):
+        return ClaudeCliProvider()
+    raise ValueError(
+        f"unknown provider {choice!r} (use mock|ollama|anthropic|claude-cli)"
+    )
 
 
 __all__ = [
@@ -645,6 +745,7 @@ __all__ = [
     "MockLLM",
     "OllamaProvider",
     "AnthropicProvider",
+    "ClaudeCliProvider",
     "FallbackLLM",
     "RateLimitError",
     "get_provider",

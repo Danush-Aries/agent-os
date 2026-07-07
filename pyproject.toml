@@ -10,6 +10,7 @@ keywords = ["agents", "orchestration", "scheduler", "runtime", "ai"]
 dependencies = []
 
 [project.scripts]
+agent-os = "agentos.cli:main"
 agentos = "agentos.cli:main"
 
 [project.optional-dependencies]

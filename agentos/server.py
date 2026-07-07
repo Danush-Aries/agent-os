@@ -39,20 +39,18 @@ _DASHBOARD = _STATIC_DIR / "dashboard.html"
 
 
 def _build_default_kernel() -> "Kernel":
-    """A kernel with the built-in agents and a *deferring* approval gate.
+    """The fully-loaded kernel the dashboard drives.
 
-    The default gate policy returns ``None`` so ``requires_approval`` tasks
-    actually surface in ``/approvals`` for a human to decide, rather than being
-    auto-approved — which is what makes the dashboard useful.
+    Boots every agent (built-ins + LLM/planner) and the real-world tool
+    integrations, wires the LLM provider via ``auto_provider()`` (your Claude
+    Max subscription through the ``claude`` CLI when available), and uses a
+    *deferring* approval gate so ``requires_approval`` tasks surface in
+    ``/approvals`` for a human — which is what makes the dashboard useful.
     """
-    from .agents import BUILTIN_AGENTS
-    from .hitl import ApprovalGate
-    from .kernel import Kernel
+    from .boot import default_kernel
+    from .llm import auto_provider
 
-    kernel = Kernel(approvals=ApprovalGate(policy=lambda _task: None))
-    for agent_cls in BUILTIN_AGENTS:
-        kernel.register(agent_cls())
-    return kernel
+    return default_kernel(llm=auto_provider(), approval_policy=lambda _task: None)
 
 
 def create_app(kernel: "Kernel | None" = None) -> "FastAPI":
@@ -180,13 +178,33 @@ def create_app(kernel: "Kernel | None" = None) -> "FastAPI":
     return app
 
 
-def run() -> None:
-    """Console entry point: launch uvicorn on ``AGENTOS_PORT`` (default 8080)."""
+def run(app=None, open_browser: bool = False) -> None:
+    """Console entry point: launch uvicorn on ``AGENTOS_PORT`` (default 8080).
+
+    ``app`` lets a caller pass a prebuilt FastAPI app (e.g. one bound to a
+    custom kernel). ``open_browser`` pops the dashboard once the server is up.
+    """
+    import threading
+    import time
+    import webbrowser
+
     import uvicorn
 
     port = int(os.environ.get("AGENTOS_PORT", "8080"))
     host = os.environ.get("AGENTOS_HOST", "127.0.0.1")
-    uvicorn.run(create_app(), host=host, port=port)
+    url = f"http://{'localhost' if host in ('0.0.0.0', '127.0.0.1') else host}:{port}"
+
+    if open_browser:
+        def _open():
+            time.sleep(1.2)  # give uvicorn a moment to bind
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        threading.Thread(target=_open, daemon=True).start()
+
+    print(f"\n  Agent OS dashboard → {url}\n  (Ctrl-C to stop)\n")
+    uvicorn.run(app if app is not None else create_app(), host=host, port=port)
 
 
 if __name__ == "__main__":  # pragma: no cover
