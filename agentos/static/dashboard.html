@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent OS — Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --amber: #d29922;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  header {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .dot { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .grid {
+    display: grid; grid-template-columns: 1fr 340px; gap: 16px;
+    padding: 16px 24px; align-items: start;
+  }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; margin-bottom: 16px;
+  }
+  .panel h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); margin: 0 0 12px; font-weight: 600;
+  }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  td.result { color: var(--fg); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em;
+  }
+  .s-completed { background: rgba(63,185,80,.15); color: var(--green); }
+  .s-failed, .s-blocked { background: rgba(248,81,73,.15); color: var(--red); }
+  .s-running, .s-pending { background: rgba(88,166,255,.15); color: var(--accent); }
+  .s-awaiting_approval { background: rgba(210,153,34,.15); color: var(--amber); }
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .metric { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .metric .k { color: var(--muted); font-size: 11px; }
+  .metric .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  form { display: flex; flex-direction: column; gap: 8px; }
+  label { font-size: 12px; color: var(--muted); }
+  input, select {
+    background: var(--bg); border: 1px solid var(--border); color: var(--fg);
+    border-radius: 6px; padding: 7px 9px; font-size: 13px; font-family: var(--mono);
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .check { display: flex; align-items: center; gap: 6px; color: var(--fg); }
+  .check input { flex: 0; }
+  button {
+    background: var(--accent); color: #0d1117; border: none; border-radius: 6px;
+    padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.deny { background: var(--red); color: #fff; }
+  button.approve { background: var(--green); color: #06210e; }
+  .approval { border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+  .approval .meta { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .approval .sum { font-size: 12.5px; margin-bottom: 8px; word-break: break-word; }
+  .approval .btns { display: flex; gap: 8px; }
+  .approval .btns button { flex: 1; padding: 6px; }
+  .empty { color: var(--muted); font-size: 12.5px; font-style: italic; }
+  #events { font-family: var(--mono); font-size: 11.5px; max-height: 220px; overflow-y: auto; }
+  #events div { padding: 2px 0; border-bottom: 1px solid var(--border); color: var(--muted); }
+  #events .kind { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent OS</h1>
+  <span class="sub">tiny OS for cooperating agents</span>
+  <span class="dot" id="conn">connecting…</span>
+</header>
+
+<div class="grid">
+  <div>
+    <div class="panel">
+      <h2>Processes</h2>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>KIND</th><th>STATUS</th><th>OWNER</th><th>RESULT / ERROR</th></tr>
+        </thead>
+        <tbody id="tasks"></tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>Event stream</h2>
+      <div id="events"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Submit task</h2>
+      <form id="submit-form">
+        <label>Kind</label>
+        <select id="f-kind">
+          <option value="echo">echo</option>
+          <option value="calc">calc</option>
+          <option value="sum_pipeline">sum_pipeline</option>
+        </select>
+        <label>Payload (JSON)</label>
+        <input id="f-payload" value='{"message":"hello"}' />
+        <div class="row">
+          <div>
+            <label>Priority</label>
+            <input id="f-priority" type="number" value="10" />
+          </div>
+        </div>
+        <label class="check"><input id="f-approval" type="checkbox" /> requires approval</label>
+        <button type="submit">Submit</button>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>Metrics</h2>
+      <div class="metrics" id="metrics"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Pending approvals</h2>
+      <div id="approvals"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function jget(url) { const r = await fetch(url); return r.json(); }
+async function jpost(url, body) {
+  const r = await fetch(url, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
+function statusBadge(s) {
+  return `<span class="badge s-${s}">${s.replace("_", " ")}</span>`;
+}
+
+async function refreshTasks() {
+  const tasks = await jget("/tasks");
+  $("tasks").innerHTML = tasks.map(t => {
+    const detail = t.error
+      ? t.error
+      : (t.result === null || t.result === undefined ? "" : JSON.stringify(t.result));
+    return `<tr>
+      <td>${t.id}</td>
+      <td>${t.kind}</td>
+      <td>${statusBadge(t.status)}</td>
+      <td>${t.owner || ""}</td>
+      <td class="result" title="${(detail+"").replace(/"/g,"&quot;")}">${detail}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" class="empty">no tasks yet</td></tr>`;
+}
+
+async function refreshMetrics() {
+  const m = await jget("/metrics");
+  $("metrics").innerHTML = Object.entries(m).map(([k, v]) =>
+    `<div class="metric"><div class="k">${k}</div><div class="v">${v}</div></div>`
+  ).join("");
+}
+
+async function refreshApprovals() {
+  const items = await jget("/approvals");
+  if (!items.length) { $("approvals").innerHTML = `<div class="empty">none pending</div>`; return; }
+  $("approvals").innerHTML = items.map(a => `
+    <div class="approval">
+      <div class="meta">#${a.task_id} · ${a.kind}</div>
+      <div class="sum">${(a.summary || "").replace(/</g,"&lt;")}</div>
+      <div class="btns">
+        <button class="approve" onclick="decide(${a.task_id}, true)">Approve</button>
+        <button class="deny" onclick="decide(${a.task_id}, false)">Deny</button>
+      </div>
+    </div>`).join("");
+}
+
+async function decide(id, approved) {
+  await jpost(`/approvals/${id}`, { approved });
+  await refreshAll();
+}
+
+async function refreshAll() {
+  await Promise.all([refreshTasks(), refreshMetrics(), refreshApprovals()]);
+}
+
+$("submit-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  let payload = {};
+  try { payload = JSON.parse($("f-payload").value || "{}"); }
+  catch { alert("Payload is not valid JSON"); return; }
+  await jpost("/tasks", {
+    kind: $("f-kind").value,
+    payload,
+    priority: parseInt($("f-priority").value, 10),
+    requires_approval: $("f-approval").checked,
+  });
+  await refreshAll();
+});
+
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/events`);
+  const log = $("events");
+  ws.onopen = () => { $("conn").textContent = "● live"; $("conn").style.color = "var(--green)"; };
+  ws.onclose = () => {
+    $("conn").textContent = "○ offline"; $("conn").style.color = "var(--red)";
+    setTimeout(connectWS, 2000);
+  };
+  ws.onmessage = (evt) => {
+    const e = JSON.parse(evt.data);
+    const div = document.createElement("div");
+    div.innerHTML = `<span class="kind">${e.kind}</span> ${e.task_id ?? ""} ${JSON.stringify(e.attrs)}`;
+    log.prepend(div);
+    while (log.childElementCount > 100) log.removeChild(log.lastChild);
+    refreshAll();
+  };
+}
+
+refreshAll();
+setInterval(refreshAll, 2000);
+connectWS();
+</script>
+</body>
+</html>
