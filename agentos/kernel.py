@@ -116,12 +116,17 @@ class Kernel:
             raise box["err"]  # type: ignore[misc]
         return box.get("ok")
 
+    def _bump(self, report: RunReport, field: str, n: int = 1) -> None:
+        """Thread-safe counter increment (``_execute`` runs in worker threads)."""
+        with self._lock:
+            setattr(report, field, getattr(report, field) + n)
+
     def _execute(self, task: Task, report: RunReport) -> None:
         agent = self.registry.find(task)
         if agent is None:
             task.status = TaskStatus.FAILED
             task.error = f"no agent handles kind '{task.kind}'"
-            report.unhandled += 1
+            self._bump(report, "unhandled")
             self.tracer.emit("task.unhandled", task.id, kind=task.kind)
             return
 
@@ -131,7 +136,7 @@ class Kernel:
             if not gr.allowed:
                 task.status = TaskStatus.FAILED
                 task.error = f"guardrail blocked input: {gr.reason}"
-                report.failed += 1
+                self._bump(report, "failed")
                 self.tracer.emit("guardrail.blocked", task.id, stage="input", reason=gr.reason)
                 return
 
@@ -154,22 +159,23 @@ class Kernel:
                 task.result = result
                 task.status = TaskStatus.COMPLETED
                 self.memory.put(f"task:{task.id}:result", result)
-                report.completed += 1
+                self._bump(report, "completed")
                 self.tracer.emit("task.completed", task.id, attempts=task.attempts)
                 self.tracer.incr("tasks.completed")
                 break
             except Exception as exc:
                 task.error = f"{type(exc).__name__}: {exc}"
                 if attempt < task.max_retries:
-                    report.retried += 1
+                    self._bump(report, "retried")
                     self.tracer.emit("task.retried", task.id, attempt=task.attempts, error=task.error)
                     self.tracer.incr("tasks.retried")
                     delay = task.backoff_base * (2 ** attempt) * (1 + _jitter(f"{task.id}:{attempt}"))
                     self._sleep(delay)
                     continue
                 task.status = TaskStatus.FAILED
-                report.failed += 1
-                report.dlq.append(task.id)
+                self._bump(report, "failed")
+                with self._lock:
+                    report.dlq.append(task.id)
                 self.memory.put(f"task:{task.id}:dlq", task.error)
                 self.tracer.emit("task.failed", task.id, attempts=task.attempts, error=task.error)
                 self.tracer.incr("tasks.failed")
