@@ -157,8 +157,11 @@ class Kernel:
                         raise ValueError(f"guardrail blocked output: {gr.reason}")
                     result = gr.text
                 task.result = result
-                task.status = TaskStatus.COMPLETED
+                # Publish the result to shared memory BEFORE marking COMPLETED:
+                # a dependent task keys off status, so if status flips first a
+                # concurrent dependent can read a missing result (happens-before).
                 self.memory.put(f"task:{task.id}:result", result)
+                task.status = TaskStatus.COMPLETED
                 self._bump(report, "completed")
                 self.tracer.emit("task.completed", task.id, attempts=task.attempts)
                 self.tracer.incr("tasks.completed")
